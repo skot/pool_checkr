@@ -507,9 +507,30 @@
                     <span class="output-value">${result.version}</span>
                 </div>`;
                 
+                // Convert nBits to difficulty
+                const nbitsInt = parseInt(result.nbits, 16);
+                const exponent = nbitsInt >>> 24;
+                const coefficient = nbitsInt & 0xffffff;
+                const target = coefficient * Math.pow(2, 8 * (exponent - 3));
+                const maxTarget = 0xffff * Math.pow(2, 8 * (0x1d - 3));
+                const difficulty = maxTarget / target;
+                
+                let difficultyStr;
+                if (difficulty >= 1e12) {
+                    difficultyStr = `${(difficulty / 1e12).toFixed(2)} T`;
+                } else if (difficulty >= 1e9) {
+                    difficultyStr = `${(difficulty / 1e9).toFixed(2)} G`;
+                } else if (difficulty >= 1e6) {
+                    difficultyStr = `${(difficulty / 1e6).toFixed(2)} M`;
+                } else if (difficulty >= 1e3) {
+                    difficultyStr = `${(difficulty / 1e3).toFixed(2)} K`;
+                } else {
+                    difficultyStr = difficulty.toFixed(2);
+                }
+                
                 html += `<div class="output-item">
                     <span class="output-label">Difficulty (nBits):</span>
-                    <span class="output-value">${result.nbits}</span>
+                    <span class="output-value">${result.nbits} (${difficultyStr})</span>
                 </div>`;
                 
                 html += `<div class="output-item">
