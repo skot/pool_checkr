@@ -401,12 +401,13 @@
             try {
                 const coinbaseHex = coinbasePart2;
                 
-                // Find sequence marker (ffffffff) followed by valid output count (01-0a)
+                // Find sequence marker (ffffffff) followed by valid output count (01-fc for single byte varint)
                 let sequencePos = -1;
                 for (let i = 0; i < coinbaseHex.length - 10; i += 2) {
                     if (coinbaseHex.substring(i, i + 8) === 'ffffffff') {
                         const nextByte = parseInt(coinbaseHex.substring(i + 8, i + 10), 16);
-                        if (nextByte >= 1 && nextByte <= 10) {
+                        // Valid output count: 1-252 (0xfc is varint marker, so single byte is 1-252)
+                        if (nextByte >= 1 && nextByte <= 252) {
                             sequencePos = i;
                             break;
                         }
