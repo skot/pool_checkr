@@ -469,12 +469,12 @@
                 
                 html += `<div class="output-item">
                     <span class="output-label">Block Height:</span>
-                    <span class="output-value">${result.height !== null ? result.height : 'Unable to extract'}</span>
+                    <span class="output-value">${result.height !== null ? `<a href="https://mempool.space/block/${result.height}" target="_blank">${result.height}</a>` : 'Unable to extract'}</span>
                 </div>`;
                 
                 html += `<div class="output-item">
                     <span class="output-label">Previous Hash:</span>
-                    <span class="output-value">${result.prevhash}</span>
+                    <span class="output-value"><a href="https://mempool.space/block/${result.prevhash}" target="_blank">${result.prevhash}</a></span>
                 </div>`;
                 
                 html += `<div class="output-item">
@@ -515,7 +515,7 @@
                         </div>`;
                         html += `<div class="output-item">
                             <span class="output-label">Address:</span>
-                            <span class="output-value">${output.address}</span>
+                            <span class="output-value">${output.address !== 'OP_RETURN' && output.address !== 'Unknown' && output.address !== '(Null Data)' ? `<a href="https://mempool.space/address/${output.address}" target="_blank">${output.address}</a>` : output.address}</span>
                         </div>`;
                         html += '</div>';
                     });
