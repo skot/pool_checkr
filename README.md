@@ -59,3 +59,7 @@ Coinbase Address: bc1qnp980s5fpp8l94p5cvttmtdqy8rvrq74qly2yrfmzkdsntqzlc5qkc4rkq
 ## License
 
 MIT
+
+## Credit
+
+Inspired by the awesome research from [https://github.com/mweinberg/stratum-speed-test/](https://github.com/mweinberg/stratum-speed-test/)
