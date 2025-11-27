@@ -4,7 +4,7 @@ A tool to parse Bitcoin mining pool Stratum `mining.notify` messages and extract
 
 ## Live Demo
 
-🔗 [Try it online](https://yourusername.github.io/pool_checkr/)
+🔗 [Try it online](https://skot.github.io/pool_checkr/)
 
 ## Features
 
@@ -20,7 +20,7 @@ A tool to parse Bitcoin mining pool Stratum `mining.notify` messages and extract
 
 ### Web Version
 
-1. Open [notify_parser.html](notify_parser.html) in your browser
+1. Open [index.html](index.html) in your browser (or visit the [live demo](https://skot.github.io/pool_checkr/))
 2. Paste a Stratum `mining.notify` JSON message
 3. Click "Parse" or press Ctrl+Enter (Cmd+Enter on Mac)
 
