@@ -399,38 +399,75 @@
             const outputs = [];
             
             try {
-                // Get scriptSig length from coinbase_part1 to calculate where outputs start
-                // Position 82: after version(8) + input_count(2) + prev_txid(64) + prev_output_index(8)
-                const scriptSigLength = parseInt(coinbasePart1.substring(82, 84), 16);
-                const scriptSigInPart1 = (coinbasePart1.length - 84) / 2; // bytes after position 84
-                const scriptSigInPart2 = scriptSigLength - scriptSigInPart1;
-                
-                // Skip remaining scriptSig bytes in part2, then sequence (4 bytes)
-                const sequencePos = scriptSigInPart2 * 2;
-                let pos = sequencePos + 8; // Skip sequence (4 bytes = 8 hex chars)
-                
                 const coinbaseHex = coinbasePart2;
                 
+                if (coinbaseHex.length < 10) {
+                    return outputs;
+                }
+                
+                let offset = 0;
+                let foundSequence = false;
+                
+                // Search for sequence marker (ffffffff) followed by plausible output count
+                for (let i = 0; i < coinbaseHex.length - 10; i += 2) {
+                    if (coinbaseHex.substring(i, i + 8) === 'ffffffff') {
+                        const nextByte = parseInt(coinbaseHex.substring(i + 8, i + 10), 16);
+                        // Valid output count: 1-252 (checking 1-10 for ffffffff heuristic)
+                        if (nextByte >= 1 && nextByte <= 10) {
+                            offset = i + 8;
+                            foundSequence = true;
+                            break;
+                        }
+                    }
+                }
+                
+                if (!foundSequence) {
+                    // Fallback: try simpler approaches
+                    if (coinbaseHex.startsWith('ffffffff')) {
+                        offset = 8;
+                    } else if (coinbaseHex.startsWith('01340000') || coinbaseHex.startsWith('00000000')) {
+                        // Might be a non-standard sequence at start
+                        offset = 8;
+                    } else {
+                        // Can't find sequence, give up
+                        return outputs;
+                    }
+                }
+                
+                // Check for SegWit marker and flag
+                if (offset < coinbaseHex.length - 4) {
+                    const marker = coinbaseHex.substring(offset, offset + 2);
+                    
+                    // If marker is 0x00 and next byte (flag) is 0x00 or 0x01, it's witness
+                    if (marker === '00' && coinbaseHex.length > offset + 2) {
+                        const flag = coinbaseHex.substring(offset + 2, offset + 4);
+                        if (flag === '00' || flag === '01') {
+                            // SegWit transaction
+                            offset += 4;
+                        }
+                    }
+                }
+                
                 // Read output count
-                const outputCount = parseInt(coinbaseHex.substring(pos, pos + 2), 16);
-                pos += 2;
+                const outputCount = parseInt(coinbaseHex.substring(offset, offset + 2), 16);
+                offset += 2;
                 
                 // Parse each output
                 for (let i = 0; i < outputCount; i++) {
                     // Read value (8 bytes, little-endian)
-                    const valueLe = coinbaseHex.substring(pos, pos + 16);
+                    const valueLe = coinbaseHex.substring(offset, offset + 16);
                     const valueBytes = valueLe.match(/.{2}/g).reverse().join('');
                     const valueSatoshis = parseInt(valueBytes, 16);
                     const valueBtc = valueSatoshis / 100000000;
-                    pos += 16;
+                    offset += 16;
                     
                     // Read scriptPubKey length
-                    const scriptLen = parseInt(coinbaseHex.substring(pos, pos + 2), 16);
-                    pos += 2;
+                    const scriptLen = parseInt(coinbaseHex.substring(offset, offset + 2), 16);
+                    offset += 2;
                     
                     // Read scriptPubKey
-                    const scriptPubKey = coinbaseHex.substring(pos, pos + scriptLen * 2);
-                    pos += scriptLen * 2;
+                    const scriptPubKey = coinbaseHex.substring(offset, offset + scriptLen * 2);
+                    offset += scriptLen * 2;
                     
                     // Determine output type and address
                     let type = 'Unknown';
