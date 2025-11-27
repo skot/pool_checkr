@@ -97,8 +97,9 @@
                 placeholder='{"params":["job_id","prevhash","coinbase1","coinbase2",[merkle_branches],"version","nbits","ntime",clean_jobs],"id":null,"method":"mining.notify"}'
             ></textarea>
             
-            <section class="field-row" style="justify-content: flex-start; margin-top: 10px;">
-                <button class="btn" onclick="parseNotify()">Parse</button>
+            <section class="field-row" style="justify-content: flex-end; margin-top: 10px;">
+                <button class="btn" onclick="clearInput()">Clear</button>
+                <button class="btn btn-default" onclick="parseNotify()" id="parseButton">Parse</button>
             </section>
             
             <div id="output" class="output-section"></div>
@@ -580,6 +581,14 @@
             }
         }
         
+        // Clear input function
+        function clearInput() {
+            document.getElementById('notifyInput').value = '';
+            document.getElementById('output').innerHTML = '';
+            document.getElementById('output').classList.remove('visible');
+            document.getElementById('notifyInput').focus();
+        }
+        
         // Allow Enter key to parse (with Ctrl/Cmd modifier to avoid interfering with line breaks)
         document.getElementById('notifyInput').addEventListener('keydown', function(e) {
             if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
@@ -587,6 +596,15 @@
                 parseNotify();
             }
         });
+        
+        // Make Parse button respond to Return key when textarea is focused
+        document.getElementById('notifyInput').addEventListener('keypress', function(e) {
+            if (e.key === 'Enter' && !e.shiftKey && !e.ctrlKey && !e.metaKey) {
+                e.preventDefault();
+                parseNotify();
+            }
+        });
     </script>
 </body>
 </html>
+
