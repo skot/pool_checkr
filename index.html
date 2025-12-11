@@ -114,6 +114,8 @@
             padding: 0;
             border: none;
             position: relative;
+            margin-top: 0.15rem;
+            margin-bottom: 0.15rem;
         }
         
         .window .title-bar::before {
@@ -180,20 +182,13 @@
             display: none;
         }
         
-        /* Override scrollbar styling */
-        .window-pane::-webkit-scrollbar,
-        .window::-webkit-scrollbar,
-        *::-webkit-scrollbar {
-            border-left: 2px solid #000 !important;
+        /* Hide scrollbar on window */
+        .window {
+            overflow: hidden !important;
         }
         
-        .window-pane::-webkit-scrollbar-track,
-        .window::-webkit-scrollbar-track,
-        *::-webkit-scrollbar-track {
-            border-left: 2px solid #000 !important;
-            background-image: repeating-conic-gradient(#fff 0% 25%, #000 0% 50%) !important;
-            background-position: 0 0, 1px 1px !important;
-            background-size: 2px 2px !important;
+        .window-pane {
+            overflow: visible !important;
         }
         
         @media (max-width: 768px) {
