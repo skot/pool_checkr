@@ -180,6 +180,21 @@
             display: none;
         }
         
+        /* Override scrollbar border thickness */
+        .window-pane::-webkit-scrollbar,
+        .window::-webkit-scrollbar,
+        *::-webkit-scrollbar {
+            border-left: 2px solid #000 !important;
+            border-right: 2px solid #000 !important;
+        }
+        
+        .window-pane::-webkit-scrollbar-track,
+        .window::-webkit-scrollbar-track,
+        *::-webkit-scrollbar-track {
+            border-left: 2px solid #000 !important;
+            border-right: 2px solid #000 !important;
+        }
+        
         @media (max-width: 768px) {
             body {
                 padding: 10px;
