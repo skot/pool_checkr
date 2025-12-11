@@ -60,6 +60,7 @@ Coinbase Address: bc1qnp980s5fpp8l94p5cvttmtdqy8rvrq74qly2yrfmzkdsntqzlc5qkc4rkq
 
 MIT
 
-## Credit
+## Credits
 
-Inspired by the awesome research from [https://github.com/mweinberg/stratum-speed-test/](https://github.com/mweinberg/stratum-speed-test/)
+- Inspired by the awesome research from [https://github.com/mweinberg/stratum-speed-test/](https://github.com/mweinberg/stratum-speed-test/)
+- Chicago Kare font by Duane King - [https://github.com/duaneking/Chicago-Kare](https://github.com/duaneking/Chicago-Kare) (MIT License)
