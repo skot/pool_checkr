@@ -177,6 +177,118 @@ function extractHeightFromCoinbase(coinbasePart1, coinbasePart2) {
     }
 }
 
+// Parse varint from hex string starting at offset
+// Returns {value, bytesConsumed} or null if invalid
+function parseVarInt(hex, offset) {
+    if (offset >= hex.length) return null;
+    
+    const firstByte = parseInt(hex.substring(offset, offset + 2), 16);
+    offset += 2;
+    
+    if (firstByte < 0xfd) {
+        return { value: firstByte, bytesConsumed: 1 };
+    } else if (firstByte === 0xfd) {
+        if (offset + 4 > hex.length) return null;
+        const value = parseInt(hex.substring(offset, offset + 4).match(/.{2}/g).reverse().join(''), 16);
+        return { value, bytesConsumed: 3 };
+    } else if (firstByte === 0xfe) {
+        if (offset + 8 > hex.length) return null;
+        const value = parseInt(hex.substring(offset, offset + 8).match(/.{2}/g).reverse().join(''), 16);
+        return { value, bytesConsumed: 5 };
+    } else {
+        if (offset + 16 > hex.length) return null;
+        const value = parseInt(hex.substring(offset, offset + 16).match(/.{2}/g).reverse().join(''), 16);
+        return { value, bytesConsumed: 9 };
+    }
+}
+
+// Find the offset after the sequence field by parsing transaction structure
+// This works with any sequence value, not just hardcoded patterns
+function findSequenceEndOffset(coinbasePart1, coinbasePart2) {
+    try {
+        // First, check if coinbasePart2 starts with sequence + valid output count
+        // This handles cases where scriptSig ends at the end of coinbasePart1
+        // and sequence field is at the start of coinbasePart2
+        if (coinbasePart2.length >= 10) {
+            const potentialOutputCount = parseInt(coinbasePart2.substring(8, 10), 16);
+            // If we have a valid output count after 8 hex chars (4 bytes = sequence field)
+            if (potentialOutputCount >= 1 && potentialOutputCount <= 253) {
+                // This is a valid pattern: sequence (4 bytes) followed by output count
+                // Return offset after sequence field (8 hex chars into coinbasePart2)
+                return coinbasePart1.length + 8;
+            }
+        }
+        
+        // Otherwise, parse the full transaction structure
+        const fullHex = coinbasePart1 + coinbasePart2;
+        
+        if (fullHex.length < 90) {
+            return null; // Too short to be a valid transaction
+        }
+        
+        let offset = 0;
+        
+        // Skip version (4 bytes = 8 hex chars)
+        offset += 8;
+        
+        // Parse input count (varint)
+        const inputCountVar = parseVarInt(fullHex, offset);
+        if (!inputCountVar || inputCountVar.value === 0) {
+            return null;
+        }
+        offset += inputCountVar.bytesConsumed * 2; // Convert bytes to hex chars
+        
+        // Skip prevout (36 bytes = 72 hex chars: 32 bytes txid + 4 bytes index)
+        offset += 72;
+        
+        // Parse scriptSig length
+        // Note: scriptSig length is a compact size (not always a varint)
+        // If < 0xfd, it's a single byte representing the length
+        // Otherwise it's a varint (0xfd = 2 bytes, 0xfe = 4 bytes, 0xff = 8 bytes)
+        const scriptSigLenByte = parseInt(fullHex.substring(offset, offset + 2), 16);
+        let scriptSigLen;
+        let scriptSigLenBytes;
+        
+        if (scriptSigLenByte < 0xfd) {
+            scriptSigLen = scriptSigLenByte;
+            scriptSigLenBytes = 1;
+        } else {
+            // It's a varint
+            const scriptSigLenVar = parseVarInt(fullHex, offset);
+            if (!scriptSigLenVar) {
+                return null;
+            }
+            scriptSigLen = scriptSigLenVar.value;
+            scriptSigLenBytes = scriptSigLenVar.bytesConsumed;
+        }
+        
+        offset += scriptSigLenBytes * 2;
+        
+        // Skip scriptSig data
+        offset += scriptSigLen * 2;
+        
+        // Now we're at the sequence field (4 bytes = 8 hex chars)
+        // After sequence comes output count
+        if (offset + 8 > fullHex.length) {
+            return null;
+        }
+        
+        // Verify that after sequence (8 hex chars) we have a valid output count
+        const afterSequence = offset + 8;
+        if (afterSequence + 2 <= fullHex.length) {
+            const potentialOutputCount = parseInt(fullHex.substring(afterSequence, afterSequence + 2), 16);
+            // Valid output count is 1-253 (0x01-0xfd for single-byte, or varint)
+            if (potentialOutputCount >= 1 && potentialOutputCount <= 253) {
+                return afterSequence; // Return offset after sequence field
+            }
+        }
+        
+        return null;
+    } catch (e) {
+        return null;
+    }
+}
+
 // Extract addresses from coinbase outputs
 async function extractAddressesFromCoinbase(coinbasePart1, coinbasePart2) {
     const outputs = [];
@@ -188,33 +300,25 @@ async function extractAddressesFromCoinbase(coinbasePart1, coinbasePart2) {
             return outputs;
         }
         
-        let offset = 0;
-        let foundSequence = false;
+        // Find sequence offset by parsing transaction structure generically
+        const sequenceEndOffset = findSequenceEndOffset(coinbasePart1, coinbasePart2);
         
-        // Search for sequence marker (ffffffff) followed by plausible output count
-        for (let i = 0; i < coinbaseHex.length - 10; i += 2) {
-            if (coinbaseHex.substring(i, i + 8) === 'ffffffff') {
-                const nextByte = parseInt(coinbaseHex.substring(i + 8, i + 10), 16);
-                // Valid output count: 1-252 (checking 1-10 for ffffffff heuristic)
-                if (nextByte >= 1 && nextByte <= 10) {
-                    offset = i + 8;
-                    foundSequence = true;
-                    break;
-                }
-            }
+        if (sequenceEndOffset === null) {
+            return outputs;
         }
         
-        if (!foundSequence) {
-            // Fallback: try simpler approaches
-            if (coinbaseHex.startsWith('ffffffff')) {
-                offset = 8;
-            } else if (coinbaseHex.startsWith('01340000') || coinbaseHex.startsWith('00000000')) {
-                // Might be a non-standard sequence at start
-                offset = 8;
-            } else {
-                // Can't find sequence, give up
-                return outputs;
-            }
+        // Convert absolute offset to offset within coinbasePart2
+        // sequenceEndOffset is the offset after the sequence field in the full combined hex
+        const part1Length = coinbasePart1.length;
+        let offset = 0;
+        
+        if (sequenceEndOffset <= part1Length) {
+            // Sequence is entirely in part1, output count starts at beginning of part2
+            offset = 0;
+        } else {
+            // Sequence ends in part2 (or output count starts in part2)
+            // Calculate where output count starts within part2
+            offset = sequenceEndOffset - part1Length;
         }
         
         // Check for SegWit marker and flag
