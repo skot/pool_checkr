@@ -1,5 +1,25 @@
 // Base58 encoding
 const BASE58_ALPHABET = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
+const NETWORKS = {
+    mainnet: {
+        name: 'Mainnet',
+        p2pkhVersion: 0x00,
+        p2shVersion: 0x05,
+        bech32Hrp: 'bc',
+        mempoolPrefix: 'https://mempool.space'
+    },
+    testnet4: {
+        name: 'Testnet4',
+        p2pkhVersion: 0x6f,
+        p2shVersion: 0xc4,
+        bech32Hrp: 'tb',
+        mempoolPrefix: 'https://mempool.space/testnet4'
+    }
+};
+
+function getNetworkConfig(networkId) {
+    return NETWORKS[networkId] || NETWORKS.mainnet;
+}
 
 function base58Encode(buffer) {
     let num = BigInt('0x' + Array.from(buffer).map(b => b.toString(16).padStart(2, '0')).join(''));
@@ -285,7 +305,7 @@ function extractHeightFromCoinbase(coinbasePart1, coinbasePart2) {
 }
 
 // Extract addresses from coinbase outputs
-async function extractAddressesFromCoinbase(coinbasePart1, coinbasePart2) {
+async function extractAddressesFromCoinbase(coinbasePart1, coinbasePart2, network = NETWORKS.mainnet) {
     const outputs = [];
     
     try {
@@ -304,29 +324,29 @@ async function extractAddressesFromCoinbase(coinbasePart1, coinbasePart2) {
                 // P2PKH
                 type = 'P2PKH';
                 const pubkeyHash = scriptPubKey.substring(6, 46);
-                address = await pubkeyHashToAddress(pubkeyHash, 0x00);
+                address = await pubkeyHashToAddress(pubkeyHash, network.p2pkhVersion);
             } else if (scriptPubKey.startsWith('a914') && scriptPubKey.endsWith('87') && scriptLen === 23) {
                 // P2SH
                 type = 'P2SH';
                 const scriptHash = scriptPubKey.substring(4, 44);
-                address = await pubkeyHashToAddress(scriptHash, 0x05);
+                address = await pubkeyHashToAddress(scriptHash, network.p2shVersion);
             } else if (scriptPubKey.startsWith('0014') && scriptLen === 22) {
                 // P2WPKH
                 type = 'P2WPKH';
                 const pubkeyHash = scriptPubKey.substring(4);
                 const witprog = pubkeyHash.match(/.{2}/g).map(b => parseInt(b, 16));
-                address = segwitAddrEncode('bc', 0, witprog);
+                address = segwitAddrEncode(network.bech32Hrp, 0, witprog);
             } else if (scriptPubKey.startsWith('0020') && scriptLen === 34) {
                 // P2WSH
                 type = 'P2WSH';
                 const scriptHash = scriptPubKey.substring(4);
                 const witprog = scriptHash.match(/.{2}/g).map(b => parseInt(b, 16));
-                address = segwitAddrEncode('bc', 0, witprog);
+                address = segwitAddrEncode(network.bech32Hrp, 0, witprog);
             } else if (scriptPubKey.startsWith('5120') && scriptLen === 34) {
                 // P2TR
                 type = 'P2TR';
                 const taprootKey = scriptPubKey.substring(4);
-                address = segwitAddrEncode('bc', 1, hexToBytes(taprootKey));
+                address = segwitAddrEncode(network.bech32Hrp, 1, hexToBytes(taprootKey));
             } else if (scriptPubKey.startsWith('6a')) {
                 // OP_RETURN
                 type = 'OP_RETURN';
@@ -348,7 +368,7 @@ async function extractAddressesFromCoinbase(coinbasePart1, coinbasePart2) {
 }
 
 // Parse mining.notify
-async function parseMiningNotify(notifyData) {
+async function parseMiningNotify(notifyData, network = NETWORKS.mainnet) {
     const result = {};
     
     let params;
@@ -378,7 +398,7 @@ async function parseMiningNotify(notifyData) {
     result.scriptSig = heightData.scriptSig;
     
     // Extract addresses from coinbase outputs
-    result.outputs = await extractAddressesFromCoinbase(coinbasePart1, coinbasePart2);
+    result.outputs = await extractAddressesFromCoinbase(coinbasePart1, coinbasePart2, network);
     
     // Additional fields
     result.version = params[5];
@@ -393,6 +413,7 @@ async function parseMiningNotify(notifyData) {
 async function parseNotify() {
     const input = document.getElementById('notifyInput').value.trim();
     const outputDiv = document.getElementById('output');
+    const network = getNetworkConfig(document.getElementById('networkSelect').value);
     
     if (!input) {
         outputDiv.innerHTML = '<fieldset><legend>Error</legend><p>Please enter a mining.notify JSON string</p></fieldset>';
@@ -402,7 +423,7 @@ async function parseNotify() {
     
     try {
         const data = JSON.parse(input);
-        const result = await parseMiningNotify(data);
+        const result = await parseMiningNotify(data, network);
         
         // Convert ntime to readable date
         const ntimeInt = parseInt(result.ntime, 16);
@@ -415,15 +436,20 @@ async function parseNotify() {
             <span class="output-label">Job ID:</span>
             <span class="output-value">${result.job_id}</span>
         </div>`;
+
+        html += `<div class="output-item">
+            <span class="output-label">Network:</span>
+            <span class="output-value">${network.name}</span>
+        </div>`;
         
         html += `<div class="output-item">
             <span class="output-label">Block Height:</span>
-            <span class="output-value">${result.height !== null ? `<a href="https://mempool.space/block/${result.height}" target="_blank">${result.height}</a>` : 'Unable to extract'}</span>
+            <span class="output-value">${result.height !== null ? `<a href="${network.mempoolPrefix}/block/${result.height}" target="_blank">${result.height}</a>` : 'Unable to extract'}</span>
         </div>`;
         
         html += `<div class="output-item">
             <span class="output-label">Previous Hash:</span>
-            <span class="output-value"><a href="https://mempool.space/block/${result.prevhash}" target="_blank">${result.prevhash}</a></span>
+            <span class="output-value"><a href="${network.mempoolPrefix}/block/${result.prevhash}" target="_blank">${result.prevhash}</a></span>
         </div>`;
         
         if (result.scriptSig) {
@@ -498,7 +524,7 @@ async function parseNotify() {
                 </div>`;
                 html += `<div class="output-item">
                     <span class="output-label">Address:</span>
-                    <span class="output-value">${output.address !== 'OP_RETURN' && output.address !== 'Unknown' && output.address !== '(Null Data)' ? `<a href="https://mempool.space/address/${output.address}" target="_blank">${output.address}</a>` : output.address}</span>
+                    <span class="output-value">${output.address !== 'OP_RETURN' && output.address !== 'Unknown' && output.address !== '(Null Data)' ? `<a href="${network.mempoolPrefix}/address/${output.address}" target="_blank">${output.address}</a>` : output.address}</span>
                 </div>`;
                 html += '</div>';
             });
