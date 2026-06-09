@@ -24,6 +24,14 @@
                 spellcheck="false"
                 placeholder='{"params":["job_id","prevhash","coinbase1","coinbase2",[merkle_branches],"version","nbits","ntime",clean_jobs],"id":null,"method":"mining.notify"}'
             ></textarea>
+
+            <section class="field-row network-row">
+                <label for="networkSelect">Network:</label>
+                <select id="networkSelect">
+                    <option value="mainnet" selected>Mainnet</option>
+                    <option value="testnet4">Testnet4</option>
+                </select>
+            </section>
             
             <section class="field-row" style="justify-content: flex-end; margin-top: 1px;">
                 <button class="btn" onclick="clearInput()">Clear</button>
@@ -41,4 +49,3 @@
     <script src="script.js"></script>
 </body>
 </html>
-

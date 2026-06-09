@@ -1,5 +1,25 @@
 // Base58 encoding
 const BASE58_ALPHABET = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
+const NETWORKS = {
+    mainnet: {
+        name: 'Mainnet',
+        p2pkhVersion: 0x00,
+        p2shVersion: 0x05,
+        bech32Hrp: 'bc',
+        mempoolPrefix: 'https://mempool.space'
+    },
+    testnet4: {
+        name: 'Testnet4',
+        p2pkhVersion: 0x6f,
+        p2shVersion: 0xc4,
+        bech32Hrp: 'tb',
+        mempoolPrefix: 'https://mempool.space/testnet4'
+    }
+};
+
+function getNetworkConfig(networkId) {
+    return NETWORKS[networkId] || NETWORKS.mainnet;
+}
 
 function base58Encode(buffer) {
     let num = BigInt('0x' + Array.from(buffer).map(b => b.toString(16).padStart(2, '0')).join(''));
@@ -69,9 +89,9 @@ function bech32HrpExpand(hrp) {
     return ret;
 }
 
-function bech32CreateChecksum(hrp, data) {
+function bech32CreateChecksum(hrp, data, encodingConstant = 1) {
     const values = bech32HrpExpand(hrp).concat(data).concat([0, 0, 0, 0, 0, 0]);
-    const polymod = bech32Polymod(values) ^ 1;
+    const polymod = bech32Polymod(values) ^ encodingConstant;
     const ret = [];
     for (let i = 0; i < 6; i++) {
         ret.push((polymod >> 5 * (5 - i)) & 31);
@@ -107,7 +127,7 @@ function convertBits(data, fromBits, toBits, pad = true) {
 
 function bech32Encode(hrp, witver, witprog) {
     const data = [witver].concat(convertBits(witprog, 8, 5));
-    const checksum = bech32CreateChecksum(hrp, data);
+    const checksum = bech32CreateChecksum(hrp, data, witver === 0 ? 1 : 0x2bc830a3);
     return hrp + '1' + data.concat(checksum).map(d => BECH32_CHARSET[d]).join('');
 }
 
@@ -130,44 +150,151 @@ function reverseHex(hexString) {
     return words.reverse().join('');
 }
 
+function hexToBytes(hex) {
+    if (!hex) {
+        return [];
+    }
+    return hex.match(/.{2}/g).map(byte => parseInt(byte, 16));
+}
+
+function littleEndianToNumber(hex) {
+    if (!hex) {
+        return 0;
+    }
+    return Number(BigInt('0x' + hex.match(/.{2}/g).reverse().join('')));
+}
+
+function hasBytes(hex, offset, byteCount) {
+    return offset + byteCount * 2 <= hex.length;
+}
+
+function readHex(hex, cursor, byteCount) {
+    if (!hasBytes(hex, cursor.offset, byteCount)) {
+        throw new Error('Unexpected end of coinbase transaction');
+    }
+    const value = hex.substring(cursor.offset, cursor.offset + byteCount * 2);
+    cursor.offset += byteCount * 2;
+    return value;
+}
+
+function readCompactSize(hex, cursor) {
+    const first = parseInt(readHex(hex, cursor, 1), 16);
+
+    if (first < 0xfd) {
+        return first;
+    }
+
+    if (first === 0xfd) {
+        return littleEndianToNumber(readHex(hex, cursor, 2));
+    }
+
+    if (first === 0xfe) {
+        return littleEndianToNumber(readHex(hex, cursor, 4));
+    }
+
+    return littleEndianToNumber(readHex(hex, cursor, 8));
+}
+
+function skipInputsPrefix(coinbasePart1) {
+    const cursor = { offset: 0 };
+
+    readHex(coinbasePart1, cursor, 4);
+
+    const marker = coinbasePart1.substring(cursor.offset, cursor.offset + 2);
+    const flag = coinbasePart1.substring(cursor.offset + 2, cursor.offset + 4);
+    if (marker === '00' && flag !== '00' && hasBytes(coinbasePart1, cursor.offset, 2)) {
+        readHex(coinbasePart1, cursor, 2);
+    }
+
+    const inputCount = readCompactSize(coinbasePart1, cursor);
+    if (inputCount < 1) {
+        throw new Error('Coinbase transaction has no inputs');
+    }
+
+    readHex(coinbasePart1, cursor, 36);
+    const scriptSigLength = readCompactSize(coinbasePart1, cursor);
+    const scriptSigBytesInPart1 = Math.max(0, (coinbasePart1.length - cursor.offset) / 2);
+
+    return {
+        cursor,
+        scriptSigLength,
+        missingScriptSigBytes: Math.max(0, scriptSigLength - scriptSigBytesInPart1)
+    };
+}
+
+function parseOutputsAtOffset(coinbasePart2, offset) {
+    const cursor = { offset };
+    const outputCount = readCompactSize(coinbasePart2, cursor);
+
+    if (outputCount < 1 || outputCount > Math.floor((coinbasePart2.length - cursor.offset) / 18)) {
+        throw new Error('Implausible coinbase output count');
+    }
+
+    const outputs = [];
+
+    for (let i = 0; i < outputCount; i++) {
+        const valueLe = readHex(coinbasePart2, cursor, 8);
+        const scriptLen = readCompactSize(coinbasePart2, cursor);
+        const scriptPubKey = readHex(coinbasePart2, cursor, scriptLen);
+
+        outputs.push({
+            value_satoshis: littleEndianToNumber(valueLe),
+            scriptPubKey,
+            scriptLen
+        });
+    }
+
+    if (!hasBytes(coinbasePart2, cursor.offset, 4)) {
+        throw new Error('Coinbase transaction is missing locktime');
+    }
+
+    return outputs;
+}
+
+function findCoinbaseOutputRecords(coinbasePart1, coinbasePart2) {
+    const { missingScriptSigBytes } = skipInputsPrefix(coinbasePart1);
+    const candidateSequenceOffsets = [0, missingScriptSigBytes * 2]
+        .filter((offset, index, offsets) => offset >= 0 && offset + 8 <= coinbasePart2.length && offsets.indexOf(offset) === index);
+
+    for (const sequenceOffset of candidateSequenceOffsets) {
+        try {
+            return parseOutputsAtOffset(coinbasePart2, sequenceOffset + 8);
+        } catch (e) {
+            // Try the next split style.
+        }
+    }
+
+    throw new Error('Unable to locate coinbase outputs');
+}
+
 // Extract block height from coinbase
 function extractHeightFromCoinbase(coinbasePart1, coinbasePart2) {
     try {
-        // Skip: version (8) + input count (2) + prev txid (64) + prev output index (8) = 82 chars
-        const scriptSigStart = 82;
-        if (coinbasePart1.length < scriptSigStart + 2) {
-            return { height: null, scriptSig: null };
-        }
-        
-        const hex = coinbasePart1.substring(scriptSigStart);
-        const scriptSigLength = parseInt(hex.substring(0, 2), 16);
+        const { cursor, scriptSigLength } = skipInputsPrefix(coinbasePart1);
+        const scriptSigInPart1 = coinbasePart1.substring(cursor.offset);
+        const scriptSig = scriptSigInPart1.substring(0, scriptSigLength * 2);
         
         if (scriptSigLength < 1) {
             return { height: null, scriptSig: null };
         }
-        
-        // Extract the full scriptSig (may span part1 and part2)
-        const scriptSigInPart1 = hex.substring(2);
-        const neededFromPart2 = Math.max(0, scriptSigLength * 2 - scriptSigInPart1.length);
-        const scriptSig = scriptSigInPart1 + coinbasePart2.substring(0, neededFromPart2);
-        
+
         // Read the first byte to determine how height is encoded
-        const firstByte = parseInt(hex.substring(2, 4), 16);
+        const firstByte = parseInt(scriptSig.substring(0, 2), 16);
         
         let height = null;
         if (firstByte >= 1 && firstByte <= 75) {
             // Direct push of 1-75 bytes
-            const heightBytes = hex.substring(4, 4 + firstByte * 2);
+            const heightBytes = scriptSig.substring(2, 2 + firstByte * 2);
             height = parseInt(heightBytes.match(/.{2}/g).reverse().join(''), 16);
         } else if (firstByte === 0x4c) {
             // OP_PUSHDATA1
-            const dataLength = parseInt(hex.substring(4, 6), 16);
-            const heightBytes = hex.substring(6, 6 + dataLength * 2);
+            const dataLength = parseInt(scriptSig.substring(2, 4), 16);
+            const heightBytes = scriptSig.substring(4, 4 + dataLength * 2);
             height = parseInt(heightBytes.match(/.{2}/g).reverse().join(''), 16);
         } else if (firstByte === 0x4d) {
             // OP_PUSHDATA2
-            const dataLength = parseInt(hex.substring(6, 8) + hex.substring(4, 6), 16);
-            const heightBytes = hex.substring(8, 8 + dataLength * 2);
+            const dataLength = parseInt(scriptSig.substring(4, 6) + scriptSig.substring(2, 4), 16);
+            const heightBytes = scriptSig.substring(6, 6 + dataLength * 2);
             height = parseInt(heightBytes.match(/.{2}/g).reverse().join(''), 16);
         }
         
@@ -178,81 +305,18 @@ function extractHeightFromCoinbase(coinbasePart1, coinbasePart2) {
 }
 
 // Extract addresses from coinbase outputs
-async function extractAddressesFromCoinbase(coinbasePart1, coinbasePart2) {
+async function extractAddressesFromCoinbase(coinbasePart1, coinbasePart2, network = NETWORKS.mainnet) {
     const outputs = [];
     
     try {
-        const coinbaseHex = coinbasePart2;
-        
-        if (coinbaseHex.length < 10) {
-            return outputs;
-        }
-        
-        let offset = 0;
-        let foundSequence = false;
-        
-        // Search for sequence marker (ffffffff) followed by plausible output count
-        for (let i = 0; i < coinbaseHex.length - 10; i += 2) {
-            if (coinbaseHex.substring(i, i + 8) === 'ffffffff') {
-                const nextByte = parseInt(coinbaseHex.substring(i + 8, i + 10), 16);
-                // Valid output count: 1-252 (checking 1-10 for ffffffff heuristic)
-                if (nextByte >= 1 && nextByte <= 10) {
-                    offset = i + 8;
-                    foundSequence = true;
-                    break;
-                }
-            }
-        }
-        
-        if (!foundSequence) {
-            // Fallback: try simpler approaches
-            if (coinbaseHex.startsWith('ffffffff')) {
-                offset = 8;
-            } else if (coinbaseHex.startsWith('01340000') || coinbaseHex.startsWith('00000000')) {
-                // Might be a non-standard sequence at start
-                offset = 8;
-            } else {
-                // Can't find sequence, give up
-                return outputs;
-            }
-        }
-        
-        // Check for SegWit marker and flag
-        if (offset < coinbaseHex.length - 4) {
-            const marker = coinbaseHex.substring(offset, offset + 2);
-            
-            // If marker is 0x00 and next byte (flag) is 0x00 or 0x01, it's witness
-            if (marker === '00' && coinbaseHex.length > offset + 2) {
-                const flag = coinbaseHex.substring(offset + 2, offset + 4);
-                if (flag === '00' || flag === '01') {
-                    // SegWit transaction
-                    offset += 4;
-                }
-            }
-        }
-        
-        // Read output count
-        const outputCount = parseInt(coinbaseHex.substring(offset, offset + 2), 16);
-        offset += 2;
-        
-        // Parse each output
-        for (let i = 0; i < outputCount; i++) {
-            // Read value (8 bytes, little-endian)
-            const valueLe = coinbaseHex.substring(offset, offset + 16);
-            const valueBytes = valueLe.match(/.{2}/g).reverse().join('');
-            const valueSatoshis = parseInt(valueBytes, 16);
+        const outputRecords = findCoinbaseOutputRecords(coinbasePart1, coinbasePart2);
+
+        for (const outputRecord of outputRecords) {
+            const valueSatoshis = outputRecord.value_satoshis;
             const valueBtc = valueSatoshis / 100000000;
-            offset += 16;
-            
-            // Read scriptPubKey length
-            const scriptLen = parseInt(coinbaseHex.substring(offset, offset + 2), 16);
-            offset += 2;
-            
-            // Read scriptPubKey
-            const scriptPubKey = coinbaseHex.substring(offset, offset + scriptLen * 2);
-            offset += scriptLen * 2;
-            
-            // Determine output type and address
+            const scriptPubKey = outputRecord.scriptPubKey;
+            const scriptLen = outputRecord.scriptLen;
+
             let type = 'Unknown';
             let address = null;
             
@@ -260,24 +324,29 @@ async function extractAddressesFromCoinbase(coinbasePart1, coinbasePart2) {
                 // P2PKH
                 type = 'P2PKH';
                 const pubkeyHash = scriptPubKey.substring(6, 46);
-                address = await pubkeyHashToAddress(pubkeyHash, 0x00);
+                address = await pubkeyHashToAddress(pubkeyHash, network.p2pkhVersion);
             } else if (scriptPubKey.startsWith('a914') && scriptPubKey.endsWith('87') && scriptLen === 23) {
                 // P2SH
                 type = 'P2SH';
                 const scriptHash = scriptPubKey.substring(4, 44);
-                address = await pubkeyHashToAddress(scriptHash, 0x05);
+                address = await pubkeyHashToAddress(scriptHash, network.p2shVersion);
             } else if (scriptPubKey.startsWith('0014') && scriptLen === 22) {
                 // P2WPKH
                 type = 'P2WPKH';
                 const pubkeyHash = scriptPubKey.substring(4);
                 const witprog = pubkeyHash.match(/.{2}/g).map(b => parseInt(b, 16));
-                address = segwitAddrEncode('bc', 0, witprog);
+                address = segwitAddrEncode(network.bech32Hrp, 0, witprog);
             } else if (scriptPubKey.startsWith('0020') && scriptLen === 34) {
                 // P2WSH
                 type = 'P2WSH';
                 const scriptHash = scriptPubKey.substring(4);
                 const witprog = scriptHash.match(/.{2}/g).map(b => parseInt(b, 16));
-                address = segwitAddrEncode('bc', 0, witprog);
+                address = segwitAddrEncode(network.bech32Hrp, 0, witprog);
+            } else if (scriptPubKey.startsWith('5120') && scriptLen === 34) {
+                // P2TR
+                type = 'P2TR';
+                const taprootKey = scriptPubKey.substring(4);
+                address = segwitAddrEncode(network.bech32Hrp, 1, hexToBytes(taprootKey));
             } else if (scriptPubKey.startsWith('6a')) {
                 // OP_RETURN
                 type = 'OP_RETURN';
@@ -299,7 +368,7 @@ async function extractAddressesFromCoinbase(coinbasePart1, coinbasePart2) {
 }
 
 // Parse mining.notify
-async function parseMiningNotify(notifyData) {
+async function parseMiningNotify(notifyData, network = NETWORKS.mainnet) {
     const result = {};
     
     let params;
@@ -329,7 +398,7 @@ async function parseMiningNotify(notifyData) {
     result.scriptSig = heightData.scriptSig;
     
     // Extract addresses from coinbase outputs
-    result.outputs = await extractAddressesFromCoinbase(coinbasePart1, coinbasePart2);
+    result.outputs = await extractAddressesFromCoinbase(coinbasePart1, coinbasePart2, network);
     
     // Additional fields
     result.version = params[5];
@@ -344,6 +413,7 @@ async function parseMiningNotify(notifyData) {
 async function parseNotify() {
     const input = document.getElementById('notifyInput').value.trim();
     const outputDiv = document.getElementById('output');
+    const network = getNetworkConfig(document.getElementById('networkSelect').value);
     
     if (!input) {
         outputDiv.innerHTML = '<fieldset><legend>Error</legend><p>Please enter a mining.notify JSON string</p></fieldset>';
@@ -353,7 +423,7 @@ async function parseNotify() {
     
     try {
         const data = JSON.parse(input);
-        const result = await parseMiningNotify(data);
+        const result = await parseMiningNotify(data, network);
         
         // Convert ntime to readable date
         const ntimeInt = parseInt(result.ntime, 16);
@@ -366,15 +436,20 @@ async function parseNotify() {
             <span class="output-label">Job ID:</span>
             <span class="output-value">${result.job_id}</span>
         </div>`;
+
+        html += `<div class="output-item">
+            <span class="output-label">Network:</span>
+            <span class="output-value">${network.name}</span>
+        </div>`;
         
         html += `<div class="output-item">
             <span class="output-label">Block Height:</span>
-            <span class="output-value">${result.height !== null ? `<a href="https://mempool.space/block/${result.height}" target="_blank">${result.height}</a>` : 'Unable to extract'}</span>
+            <span class="output-value">${result.height !== null ? `<a href="${network.mempoolPrefix}/block/${result.height}" target="_blank">${result.height}</a>` : 'Unable to extract'}</span>
         </div>`;
         
         html += `<div class="output-item">
             <span class="output-label">Previous Hash:</span>
-            <span class="output-value"><a href="https://mempool.space/block/${result.prevhash}" target="_blank">${result.prevhash}</a></span>
+            <span class="output-value"><a href="${network.mempoolPrefix}/block/${result.prevhash}" target="_blank">${result.prevhash}</a></span>
         </div>`;
         
         if (result.scriptSig) {
@@ -449,7 +524,7 @@ async function parseNotify() {
                 </div>`;
                 html += `<div class="output-item">
                     <span class="output-label">Address:</span>
-                    <span class="output-value">${output.address !== 'OP_RETURN' && output.address !== 'Unknown' && output.address !== '(Null Data)' ? `<a href="https://mempool.space/address/${output.address}" target="_blank">${output.address}</a>` : output.address}</span>
+                    <span class="output-value">${output.address !== 'OP_RETURN' && output.address !== 'Unknown' && output.address !== '(Null Data)' ? `<a href="${network.mempoolPrefix}/address/${output.address}" target="_blank">${output.address}</a>` : output.address}</span>
                 </div>`;
                 html += '</div>';
             });

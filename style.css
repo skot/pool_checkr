@@ -51,6 +51,17 @@ textarea:focus {
     color: black !important;
 }
 
+.network-row {
+    align-items: center;
+    gap: 8px;
+    justify-content: flex-start;
+    margin-top: 6px;
+}
+
+.network-row label {
+    margin-bottom: 0;
+}
+
 .output-section {
     display: none;
     margin-top: 10px;
