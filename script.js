@@ -218,6 +218,7 @@ function skipInputsPrefix(coinbasePart1) {
     return {
         cursor,
         scriptSigLength,
+        scriptSigBytesInPart1,
         missingScriptSigBytes: Math.max(0, scriptSigLength - scriptSigBytesInPart1)
     };
 }
@@ -251,14 +252,28 @@ function parseOutputsAtOffset(coinbasePart2, offset) {
     return outputs;
 }
 
-function findCoinbaseOutputRecords(coinbasePart1, coinbasePart2) {
+function findCoinbaseOutputOffset(coinbasePart1, coinbasePart2) {
     const { missingScriptSigBytes } = skipInputsPrefix(coinbasePart1);
-    const candidateSequenceOffsets = [0, missingScriptSigBytes * 2]
+    const splitOffsets = [0, missingScriptSigBytes * 2]
         .filter((offset, index, offsets) => offset >= 0 && offset + 8 <= coinbasePart2.length && offsets.indexOf(offset) === index);
+    const candidateOutputOffsets = [];
 
-    for (const sequenceOffset of candidateSequenceOffsets) {
+    for (const splitOffset of splitOffsets) {
+        candidateOutputOffsets.push(splitOffset);
+        candidateOutputOffsets.push(splitOffset + 8);
+    }
+
+    for (let offset = 0; offset < coinbasePart2.length; offset += 2) {
+        candidateOutputOffsets.push(offset);
+    }
+
+    const uniqueOutputOffsets = candidateOutputOffsets
+        .filter((offset, index, offsets) => offset >= 0 && offset < coinbasePart2.length && offsets.indexOf(offset) === index);
+
+    for (const outputOffset of uniqueOutputOffsets) {
         try {
-            return parseOutputsAtOffset(coinbasePart2, sequenceOffset + 8);
+            parseOutputsAtOffset(coinbasePart2, outputOffset);
+            return outputOffset;
         } catch (e) {
             // Try the next split style.
         }
@@ -267,15 +282,45 @@ function findCoinbaseOutputRecords(coinbasePart1, coinbasePart2) {
     throw new Error('Unable to locate coinbase outputs');
 }
 
+function findCoinbaseOutputRecords(coinbasePart1, coinbasePart2) {
+    return parseOutputsAtOffset(coinbasePart2, findCoinbaseOutputOffset(coinbasePart1, coinbasePart2));
+}
+
+function hexToAscii(hex) {
+    let ascii = '';
+
+    for (let i = 0; i < hex.length; i += 2) {
+        const byte = parseInt(hex.substr(i, 2), 16);
+        ascii += (byte >= 32 && byte <= 126) ? String.fromCharCode(byte) : '.';
+    }
+
+    return ascii;
+}
+
 // Extract block height from coinbase
 function extractHeightFromCoinbase(coinbasePart1, coinbasePart2) {
     try {
-        const { cursor, scriptSigLength } = skipInputsPrefix(coinbasePart1);
-        const scriptSigInPart1 = coinbasePart1.substring(cursor.offset);
-        const scriptSig = scriptSigInPart1.substring(0, scriptSigLength * 2);
+        const { cursor, scriptSigLength, scriptSigBytesInPart1 } = skipInputsPrefix(coinbasePart1);
+        const scriptSigPart1 = coinbasePart1.substring(cursor.offset, cursor.offset + scriptSigLength * 2);
+        let scriptSigPart2 = '';
+        let unknownScriptSigBytes = Math.max(0, scriptSigLength - scriptSigBytesInPart1);
+
+        try {
+            const outputOffset = findCoinbaseOutputOffset(coinbasePart1, coinbasePart2);
+            const sequenceOffset = outputOffset - 8;
+            if (sequenceOffset > 0) {
+                scriptSigPart2 = coinbasePart2.substring(0, sequenceOffset);
+                unknownScriptSigBytes = Math.max(0, scriptSigLength - scriptSigBytesInPart1 - scriptSigPart2.length / 2);
+            }
+        } catch (e) {
+            scriptSigPart2 = coinbasePart2.substring(0, unknownScriptSigBytes * 2);
+            unknownScriptSigBytes = Math.max(0, unknownScriptSigBytes - scriptSigPart2.length / 2);
+        }
+
+        const scriptSig = scriptSigPart1 + scriptSigPart2;
         
         if (scriptSigLength < 1) {
-            return { height: null, scriptSig: null };
+            return { height: null, scriptSig: null, scriptSigAscii: null };
         }
 
         // Read the first byte to determine how height is encoded
@@ -298,9 +343,12 @@ function extractHeightFromCoinbase(coinbasePart1, coinbasePart2) {
             height = parseInt(heightBytes.match(/.{2}/g).reverse().join(''), 16);
         }
         
-        return { height, scriptSig };
+        const placeholder = unknownScriptSigBytes > 0 ? `[${unknownScriptSigBytes} bytes extranonce]` : '';
+        const scriptSigAscii = hexToAscii(scriptSigPart1) + placeholder + hexToAscii(scriptSigPart2);
+
+        return { height, scriptSig, scriptSigAscii };
     } catch (e) {
-        return { height: null, scriptSig: null };
+        return { height: null, scriptSig: null, scriptSigAscii: null };
     }
 }
 
@@ -396,6 +444,7 @@ async function parseMiningNotify(notifyData, network = NETWORKS.mainnet) {
     const heightData = extractHeightFromCoinbase(coinbasePart1, coinbasePart2);
     result.height = heightData.height;
     result.scriptSig = heightData.scriptSig;
+    result.scriptSigAscii = heightData.scriptSigAscii;
     
     // Extract addresses from coinbase outputs
     result.outputs = await extractAddressesFromCoinbase(coinbasePart1, coinbasePart2, network);
@@ -453,15 +502,9 @@ async function parseNotify() {
         </div>`;
         
         if (result.scriptSig) {
-            // Convert hex to ASCII
-            let ascii = '';
-            for (let i = 0; i < result.scriptSig.length; i += 2) {
-                const byte = parseInt(result.scriptSig.substr(i, 2), 16);
-                ascii += (byte >= 32 && byte <= 126) ? String.fromCharCode(byte) : '.';
-            }
             html += `<div class="output-item">
                 <span class="output-label">ScriptSig:</span>
-                <span class="output-value">${ascii}</span>
+                <span class="output-value">${result.scriptSigAscii || hexToAscii(result.scriptSig)}</span>
             </div>`;
         }
         
